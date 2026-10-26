@@ -1,0 +1,9 @@
+{
+  "name": "영어 따라 말하기",
+  "short_name": "따라 말하기",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f5f7fb",
+  "theme_color": "#2f6fed",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}
