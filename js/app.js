@@ -735,6 +735,30 @@ async function viewResults() {
       <table>${head}${body}</table>`;
   }
 
+  // 화면 안에서 한 번 더 확인 (실수로 지우지 않도록)
+  function askConfirm(box, message, yesLabel, onYes) {
+    box.innerHTML = `<div class="dup-note">${message}
+      <div class="row gap wrap" style="margin-top:8px"><button class="btn danger" data-yes>${yesLabel}</button><button class="btn" data-no>취소</button></div></div>`;
+    box.querySelector("[data-no]").addEventListener("click", () => { box.innerHTML = ""; });
+    box.querySelector("[data-yes]").addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      try { await onYes(); } catch (err) { toast(errMsg(err)); e.target.disabled = false; }
+    });
+  }
+
+  // 점수와 녹음을 함께 지움 → 학생은 그 문장을 다시 해야 다음으로 넘어감
+  async function deleteAttempts(ids) {
+    let batch = writeBatch(db), n = 0;
+    for (const id of ids) {
+      batch.delete(doc(db, "attempts", id));
+      batch.delete(doc(db, "recordings", id));
+      if (++n % 200 === 0) { await batch.commit(); batch = writeBatch(db); }
+    }
+    await batch.commit();
+  }
+
+  function closeModal() { const m = $("modal"); m.classList.add("hidden"); m.innerHTML = ""; }
+
   function openStudent(r) {
     const m = $("modal");
     m.classList.remove("hidden");
@@ -751,6 +775,11 @@ async function viewResults() {
       <p class="muted small"><b>저장</b>: 선생님이 직접 고쳐요. 이 학생의 지난 점수 기록에도 함께 반영돼요.<br>
       <b>정보 초기화</b>: 학생 정보만 지워요 (점수·녹음은 남아요). 학생이 다음에 앱을 열면 반·번호·이름을 다시 입력해요.</p>
       <div id="stConfirm"></div>
+      <hr class="sep">
+      <b>이 수업 기록</b> <span class="muted small">(${esc(lesson.title)} · 저장한 문장 ${Object.keys(r.at).length}개)</span>
+      <p class="muted small">이 학생의 이 수업 <b>점수와 녹음을 모두</b> 지워요. 학생은 1번 문장부터 다시 해야 해요. 다른 수업 기록은 그대로예요.</p>
+      <button class="btn danger" id="stRedoLesson" ${Object.keys(r.at).length ? "" : "disabled"}>이 수업 전체 다시 하게 하기</button>
+      <div id="stRedoConfirm"></div>
     </div>`;
     const close = () => { m.classList.add("hidden"); m.innerHTML = ""; };
     m.onclick = (e) => { if (e.target === m || e.target.id === "close") close(); };
@@ -758,6 +787,15 @@ async function viewResults() {
       // 학생 정보 문서가 없는(이미 초기화된) 학생
       $("stReset").disabled = true;
     }
+    $("stRedoLesson").addEventListener("click", () => {
+      askConfirm($("stRedoConfirm"), `${esc(r.name)} 학생의 「${esc(lesson.title)}」 점수와 녹음을 모두 지울까요? 되돌릴 수 없어요.`, "네, 전체 다시 하게 하기", async () => {
+        const at = await getDocs(query(collection(db, "attempts"), where("uid", "==", r.uid), where("lessonId", "==", lesson.id)));
+        await deleteAttempts(at.docs.map((d) => d.id));
+        toast(`${r.name} 학생의 이 수업 기록 ${at.docs.length}개를 지웠어요. 학생이 앱을 새로 열면 1번 문장부터 시작해요.`, 6000);
+        closeModal();
+        load();
+      });
+    });
     $("stSave").addEventListener("click", async () => {
       const classId = $("stCls").value;
       const number = parseInt($("stNum").value, 10);
@@ -801,8 +839,20 @@ async function viewResults() {
       <p>점수 <b>${a.pron}%</b>${a.speed ? ` · 말하기 길이 원음의 ${a.speed}배` : ""}</p>
       <p class="muted small">시도 ${a.tries}회 · 최고 ${a.best}% · ${a.updatedAt?.toDate ? a.updatedAt.toDate().toLocaleString("ko-KR") : ""}</p>
       <audio id="aud" controls preload="none"></audio>
+      <hr class="sep">
+      <button class="btn danger" id="redoOne">이 문장 다시 하게 하기</button>
+      <p class="muted small">이 문장의 점수와 녹음을 지워요. 학생은 이 문장을 다시 녹음해서 ${passScore + 1}% 이상 저장해야 다음 문장으로 넘어가요.</p>
+      <div id="redoConfirm"></div>
     </div>`;
-    m.onclick = (e) => { if (e.target === m || e.target.id === "close") { m.classList.add("hidden"); m.innerHTML = ""; } };
+    m.onclick = (e) => { if (e.target === m || e.target.id === "close") closeModal(); };
+    $("redoOne").addEventListener("click", () => {
+      askConfirm($("redoConfirm"), `${esc(r.name)} 학생의 ${i + 1}번 문장 점수와 녹음을 지울까요? 되돌릴 수 없어요.`, "네, 다시 하게 하기", async () => {
+        await deleteAttempts([`${r.uid}_${lesson.id}_${i}`]);
+        toast(`${r.name} 학생의 ${i + 1}번 문장을 지웠어요. 학생이 앱을 새로 열면 이 문장부터 다시 해요.`, 6000);
+        closeModal();
+        load();
+      });
+    });
     try {
       const url = await recordingUrl(`${r.uid}_${lesson.id}_${i}`);
       if (url) $("aud").src = url; else $("aud").outerHTML = `<p class="muted small">녹음 파일이 없습니다.</p>`;
