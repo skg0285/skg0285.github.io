@@ -148,6 +148,17 @@ function speedText(speed) {
   return "원음과 비슷한 속도예요 👍";
 }
 
+// 학생 정보(반·번호·이름)가 바뀌면 그 학생의 점수 기록에도 똑같이 반영
+async function syncAttemptProfile(uid, profile) {
+  const at = await getDocs(query(collection(db, "attempts"), where("uid", "==", uid)));
+  let batch = writeBatch(db), n = 0;
+  for (const d of at.docs) {
+    batch.set(doc(db, "attempts", d.id), { classId: profile.classId, name: profile.name, number: profile.number }, { merge: true });
+    if (++n % 400 === 0) { await batch.commit(); batch = writeBatch(db); }
+  }
+  await batch.commit();
+}
+
 // ---------- 로그인 ----------
 function viewLogin() {
   const inTeams = /Teams/i.test(navigator.userAgent);
@@ -211,6 +222,7 @@ function viewProfile() {
       const data = { classId, number, name, email: state.user.email || "", updatedAt: serverTimestamp() };
       await setDoc(doc(db, "users", state.user.uid), data);
       state.profile = data;
+      await syncAttemptProfile(state.user.uid, data).catch(() => {});
       location.hash = "#/";
       route();
     } catch (e) { toast(errMsg(e)); }
@@ -690,7 +702,7 @@ async function viewResults() {
       us.forEach((d) => { byUser[d.id] = { uid: d.id, ...d.data(), at: {} }; });
       at.forEach((d) => {
         const a = d.data();
-        byUser[a.uid] ||= { uid: a.uid, name: a.name, number: a.number, at: {} };
+        byUser[a.uid] ||= { uid: a.uid, name: a.name, number: a.number, classId: a.classId, at: {} };
         byUser[a.uid].at[a.index] = a;
       });
       rows = Object.values(byUser).sort((a, b) => (a.number || 0) - (b.number || 0));
@@ -702,6 +714,9 @@ async function viewResults() {
     const n = (lesson.sentences || []).length;
     if (!rows.length) { $("table").textContent = "이 반에 등록된 학생이 없습니다."; return; }
     const head = `<tr><th>번호</th><th>이름</th><th>완료</th><th>평균</th>${Array.from({ length: n }, (_, i) => `<th>${i + 1}</th>`).join("")}</tr>`;
+    const count = {};
+    rows.forEach((r) => { count[r.number] = (count[r.number] || 0) + 1; });
+    const dups = rows.filter((r) => count[r.number] > 1).length;
     const body = rows.map((r, ri) => {
       const sc = Object.values(r.at).map((a) => a.pron);
       const avg = sc.length ? Math.round(sc.reduce((a, b) => a + b, 0) / sc.length) : null;
@@ -709,10 +724,69 @@ async function viewResults() {
         const a = r.at[i];
         return a ? `<td><button class="cell ${scoreClass(a.pron)}" data-r="${ri}" data-i="${i}">${a.pron}</button></td>` : `<td class="empty">-</td>`;
       }).join("");
-      return `<tr><td>${esc(r.number)}</td><td class="name">${esc(r.name)}</td><td>${sc.length}/${n}</td><td><b class="${scoreClass(avg)}-t">${avg ?? "-"}</b></td>${cells}</tr>`;
+      const dup = count[r.number] > 1;
+      const id = (r.email || "").split("@")[0];
+      return `<tr class="${dup ? "dup" : ""}"><td>${esc(r.number)}${dup ? ` <span class="dup-badge">중복</span>` : ""}</td>
+        <td class="name"><button class="link student" data-r="${ri}" title="학생 정보 수정">${esc(r.name)} ✎</button>${id ? `<div class="sid">${esc(id)}</div>` : r.email === undefined ? `<div class="sid">초기화됨 · 학생 재입력 대기</div>` : ""}</td><td>${sc.length}/${n}</td><td><b class="${scoreClass(avg)}-t">${avg ?? "-"}</b></td>${cells}</tr>`;
     }).join("");
     $("table").className = "table-wrap";
-    $("table").innerHTML = `<p class="muted small">숫자 = 가장 최근 녹음의 발음 점수(%). 칸을 누르면 녹음을 듣고 자세히 볼 수 있어요.</p><table>${head}${body}</table>`;
+    $("table").innerHTML = `<p class="muted small">숫자 = 가장 최근 녹음의 발음 점수(%). 칸을 누르면 녹음을 듣고 자세히 볼 수 있어요. 이름을 누르면 학생 정보를 고치거나 초기화할 수 있어요. 이름 아래 숫자는 학생 계정 아이디예요.</p>
+      ${dups ? `<p class="dup-note">⚠ 번호가 겹치는 학생이 ${dups}명 있어요. 계정 아이디를 보고 이름을 눌러 고쳐 주세요.</p>` : ""}
+      <table>${head}${body}</table>`;
+  }
+
+  function openStudent(r) {
+    const m = $("modal");
+    m.classList.remove("hidden");
+    m.innerHTML = `<div class="card modal-box">
+      <div class="row between"><b>학생 정보</b><button class="link" id="close">닫기 ✕</button></div>
+      <p class="muted small">계정: ${esc(r.email || "(알 수 없음)")}</p>
+      <label>반<select id="stCls">${state.classes.concat(TEST_CLASS).map((c) => `<option ${c === r.classId ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></label>
+      <label>번호<input id="stNum" type="number" inputmode="numeric" min="0" max="99" value="${esc(r.number ?? "")}"></label>
+      <label>이름<input id="stName" maxlength="30" value="${esc(r.name ?? "")}"></label>
+      <div class="row between wrap gap">
+        <button class="btn danger" id="stReset">정보 초기화</button>
+        <button class="btn primary" id="stSave">저장</button>
+      </div>
+      <p class="muted small"><b>저장</b>: 선생님이 직접 고쳐요. 이 학생의 지난 점수 기록에도 함께 반영돼요.<br>
+      <b>정보 초기화</b>: 학생 정보만 지워요 (점수·녹음은 남아요). 학생이 다음에 앱을 열면 반·번호·이름을 다시 입력해요.</p>
+      <div id="stConfirm"></div>
+    </div>`;
+    const close = () => { m.classList.add("hidden"); m.innerHTML = ""; };
+    m.onclick = (e) => { if (e.target === m || e.target.id === "close") close(); };
+    if (!r.email) {
+      // 학생 정보 문서가 없는(이미 초기화된) 학생
+      $("stReset").disabled = true;
+    }
+    $("stSave").addEventListener("click", async () => {
+      const classId = $("stCls").value;
+      const number = parseInt($("stNum").value, 10);
+      const name = $("stName").value.trim();
+      if (!name || !(number >= 0 && number <= 99)) return toast("번호와 이름을 입력하세요.");
+      $("stSave").disabled = true;
+      try {
+        const data = { classId, number, name, email: r.email || "", updatedAt: serverTimestamp() };
+        await setDoc(doc(db, "users", r.uid), data);
+        await syncAttemptProfile(r.uid, data);
+        toast("학생 정보를 고쳤어요.");
+        close();
+        load();
+      } catch (e) { toast(errMsg(e)); $("stSave").disabled = false; }
+    });
+    // 초기화는 한 번 더 확인
+    $("stReset").addEventListener("click", () => {
+      $("stConfirm").innerHTML = `<div class="dup-note">${esc(r.name)} 학생의 정보를 초기화할까요?
+        <div class="row gap" style="margin-top:8px"><button class="btn danger" id="stResetYes">네, 초기화</button><button class="btn" id="stResetNo">취소</button></div></div>`;
+      $("stResetNo").addEventListener("click", () => { $("stConfirm").innerHTML = ""; });
+      $("stResetYes").addEventListener("click", async () => {
+        try {
+          await deleteDoc(doc(db, "users", r.uid));
+          toast("초기화했어요. 학생이 앱을 다시 열면 정보를 새로 입력해요.", 5000);
+          close();
+          load();
+        } catch (e) { toast(errMsg(e)); }
+      });
+    });
   }
 
   async function openDetail(r, i) {
@@ -738,11 +812,11 @@ async function viewResults() {
   function exportCsv() {
     if (!lesson || !rows.length) return;
     const n = (lesson.sentences || []).length;
-    const lines = [["번호", "이름", "완료", "평균", ...Array.from({ length: n }, (_, i) => `${i + 1}번`)]];
+    const lines = [["번호", "이름", "계정", "완료", "평균", ...Array.from({ length: n }, (_, i) => `${i + 1}번`)]];
     rows.forEach((r) => {
       const sc = Object.values(r.at).map((a) => a.pron);
       const avg = sc.length ? Math.round(sc.reduce((a, b) => a + b, 0) / sc.length) : "";
-      lines.push([r.number, r.name, sc.length, avg, ...Array.from({ length: n }, (_, i) => r.at[i]?.pron ?? "")]);
+      lines.push([r.number, r.name, (r.email || "").split("@")[0], sc.length, avg, ...Array.from({ length: n }, (_, i) => r.at[i]?.pron ?? "")]);
     });
     const csv = "﻿" + lines.map((l) => l.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",")).join("\r\n");
     const a = document.createElement("a");
@@ -767,6 +841,8 @@ async function viewResults() {
   $("reload").addEventListener("click", load);
   $("csv").addEventListener("click", exportCsv);
   $("table").addEventListener("click", (e) => {
+    const st = e.target.closest(".student");
+    if (st) return openStudent(rows[Number(st.dataset.r)]);
     const b = e.target.closest(".cell");
     if (b) openDetail(rows[Number(b.dataset.r)], Number(b.dataset.i));
   });

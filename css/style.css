@@ -24,6 +24,7 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
@@ -194,3 +195,10 @@ td.empty { color: var(--none); }
 .btn.locked { background: var(--soft); border-color: var(--line); color: var(--muted); }
 .pass-hint { text-align: center; font-weight: 600; color: var(--ok-text); background: var(--ok-soft); border-radius: 10px; padding: 8px 12px; }
 .cam-need { color: var(--bad); font-weight: 700; }
+
+/* 결과표: 학생 정보 고치기, 번호 중복 */
+.link.student { padding: 0; font-weight: 600; text-align: left; }
+.sid { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+tr.dup td { background: var(--bad-soft); }
+.dup-badge { font-size: 11px; font-weight: 700; color: var(--bad); }
+.dup-note { background: var(--bad-soft); color: var(--bad); font-weight: 600; border-radius: 10px; padding: 8px 12px; }
